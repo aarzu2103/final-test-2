@@ -1,6 +1,6 @@
 <?php
 /**
- * REBUILT Auto Checkout Cron Job - Day 6 Final Solution
+ * REBUILT Auto Checkout Cron Job - Hostinger Compatible
  * GUARANTEED daily 10:00 AM execution with foolproof logic
  * SIMPLIFIED - NO PAYMENT CALCULATION
  * 
@@ -45,7 +45,7 @@ if ($isManualRun) {
     echo "<!DOCTYPE html><html><head><title>Auto Checkout Execution</title>";
     echo "<style>body{font-family:Arial;margin:20px;line-height:1.6;} .success{color:green;font-weight:bold;} .error{color:red;font-weight:bold;} .warning{color:orange;font-weight:bold;} .info{color:blue;font-weight:bold;}</style>";
     echo "</head><body>";
-    echo "<h2>🕙 Daily 10:00 AM Auto Checkout Execution - SIMPLIFIED VERSION</h2>";
+    echo "<h2>🕙 Daily 10:00 AM Auto Checkout Execution - HOSTINGER COMPATIBLE</h2>";
     echo "<p><strong>Current Time:</strong> " . date('H:i:s') . " (Asia/Kolkata)</p>";
     echo "<p><strong>Current Date:</strong> " . date('Y-m-d') . "</p>";
     echo "<p><strong>Execution Mode:</strong> " . ($isManualRun ? 'MANUAL TEST' : 'AUTOMATIC CRON') . "</p>";
@@ -60,7 +60,7 @@ logMessage("Target execution time: 10:00-10:05 AM daily");
 logMessage("Current server time: " . date('H:i:s'));
 logMessage("Payment mode: MANUAL ONLY (no automatic calculation)");
 
-// Database connection
+// Database connection with proper error handling
 try {
     $host = 'localhost';
     $dbname = 'u261459251_patel';
@@ -147,6 +147,10 @@ try {
     
     if ($isManualRun) {
         echo "<p class='error'>Critical Error: " . htmlspecialchars($e->getMessage()) . "</p>";
+        echo "<div style='background:#f8d7da; padding:1rem; border-radius:8px; margin:1rem 0;'>";
+        echo "<h4>Error Details:</h4>";
+        echo "<pre>" . htmlspecialchars($e->getTraceAsString()) . "</pre>";
+        echo "</div>";
         echo "</body></html>";
     }
     

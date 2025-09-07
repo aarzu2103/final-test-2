@@ -1,6 +1,6 @@
 <?php
 /**
- * COMPLETELY REBUILT Auto Checkout System - Day 6 Final Solution
+ * COMPLETELY REBUILT Auto Checkout System - Hostinger Compatible
  * SIMPLIFIED VERSION - NO PAYMENT CALCULATION
  * GUARANTEED daily 10:00 AM execution with foolproof logic
  */
@@ -105,8 +105,10 @@ class AutoCheckout {
                 'total_processed' => count($bookings),
                 'successful' => $successful,
                 'failed' => $failed,
-                'successful_bookings' => $successfulBookings,
-                'failed_bookings' => $failedBookings
+                'details' => [
+                    'successful' => $successfulBookings,
+                    'failed' => $failedBookings
+                ]
             ]);
             
         } catch (Exception $e) {
@@ -206,26 +208,31 @@ class AutoCheckout {
      * Get bookings that need to be checked out
      */
     private function getBookingsForCheckout() {
-        $stmt = $this->pdo->prepare("
-            SELECT 
-                b.id,
-                b.resource_id,
-                b.client_name,
-                b.client_mobile,
-                b.check_in,
-                b.actual_check_in,
-                b.status,
-                b.admin_id,
-                COALESCE(r.custom_name, r.display_name) as resource_name
-            FROM bookings b 
-            JOIN resources r ON b.resource_id = r.id 
-            WHERE b.status IN ('BOOKED', 'PENDING')
-            AND b.auto_checkout_processed = 0
-            ORDER BY b.check_in ASC
-        ");
-        $stmt->execute();
-        
-        return $stmt->fetchAll();
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT 
+                    b.id,
+                    b.resource_id,
+                    b.client_name,
+                    b.client_mobile,
+                    b.check_in,
+                    b.actual_check_in,
+                    b.status,
+                    b.admin_id,
+                    COALESCE(r.custom_name, r.display_name) as resource_name
+                FROM bookings b 
+                JOIN resources r ON b.resource_id = r.id 
+                WHERE b.status IN ('BOOKED', 'PENDING')
+                AND (b.auto_checkout_processed IS NULL OR b.auto_checkout_processed = 0)
+                ORDER BY b.check_in ASC
+            ");
+            $stmt->execute();
+            
+            return $stmt->fetchAll();
+        } catch (Exception $e) {
+            $this->log("Error getting bookings: " . $e->getMessage(), 'ERROR');
+            return [];
+        }
     }
     
     /**
@@ -254,8 +261,8 @@ class AutoCheckout {
         try {
             $stmt = $this->pdo->prepare("
                 INSERT INTO cron_execution_logs 
-                (execution_date, execution_time, execution_type, bookings_found, bookings_processed, bookings_successful, bookings_failed, execution_status, error_message, server_time) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                (execution_date, execution_time, execution_type, bookings_found, bookings_processed, bookings_successful, bookings_failed, execution_status, error_message, server_time, notes) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)
                 ON DUPLICATE KEY UPDATE
                 execution_time = VALUES(execution_time),
                 bookings_found = VALUES(bookings_found),
@@ -264,11 +271,13 @@ class AutoCheckout {
                 bookings_failed = VALUES(bookings_failed),
                 execution_status = VALUES(execution_status),
                 error_message = VALUES(error_message),
-                server_time = VALUES(server_time)
+                server_time = VALUES(server_time),
+                notes = VALUES(notes)
             ");
             
             $executionType = $this->isManualRun() ? 'manual' : 'automatic';
-            $stmt->execute([$date, $time, $executionType, $found, $successful + $failed, $successful, $failed, $status, $errorMessage]);
+            $notes = "Daily 10:00 AM auto checkout execution - Hostinger compatible version";
+            $stmt->execute([$date, $time, $executionType, $found, $successful + $failed, $successful, $failed, $status, $errorMessage, $notes]);
             
             // Update last run settings
             $this->updateSystemSetting('auto_checkout_last_run_date', $date);
@@ -327,7 +336,8 @@ class AutoCheckout {
             'status' => $status,
             'message' => $message,
             'timestamp' => date('Y-m-d H:i:s'),
-            'timezone' => $this->timezone
+            'timezone' => $this->timezone,
+            'run_type' => $this->isManualRun() ? 'manual' : 'automatic'
         ], $data);
     }
     
@@ -349,13 +359,17 @@ class AutoCheckout {
             $bookings = $this->getBookingsForCheckout();
             $successful = 0;
             $failed = 0;
+            $successfulBookings = [];
+            $failedBookings = [];
             
             foreach ($bookings as $booking) {
                 $result = $this->processSimpleCheckout($booking);
                 if ($result['success']) {
                     $successful++;
+                    $successfulBookings[] = $booking;
                 } else {
                     $failed++;
+                    $failedBookings[] = ['booking' => $booking, 'error' => $result['error']];
                 }
             }
             
@@ -364,7 +378,11 @@ class AutoCheckout {
             return $this->createResponse('force_completed', "Force checkout completed", [
                 'total_processed' => count($bookings),
                 'successful' => $successful,
-                'failed' => $failed
+                'failed' => $failed,
+                'details' => [
+                    'successful' => $successfulBookings,
+                    'failed' => $failedBookings
+                ]
             ]);
             
         } catch (Exception $e) {

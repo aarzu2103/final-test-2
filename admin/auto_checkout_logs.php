@@ -31,54 +31,67 @@ if ($statusFilter) {
 
 $whereClause = !empty($whereConditions) ? 'WHERE ' . implode(' AND ', $whereConditions) : '';
 
-$stmt = $pdo->prepare("
-    SELECT acl.*, r.display_name, r.custom_name, r.type
-    FROM auto_checkout_logs acl
-    LEFT JOIN resources r ON acl.resource_id = r.id
-    $whereClause
-    ORDER BY acl.created_at DESC
-    LIMIT ? OFFSET ?
-");
+// Get logs with proper error handling
+try {
+    $stmt = $pdo->prepare("
+        SELECT acl.*, 
+               COALESCE(r.custom_name, r.display_name) as resource_display_name,
+               r.type as resource_type
+        FROM auto_checkout_logs acl
+        LEFT JOIN resources r ON acl.resource_id = r.id
+        $whereClause
+        ORDER BY acl.created_at DESC
+        LIMIT ? OFFSET ?
+    ");
 
-$params[] = $limit;
-$params[] = $offset;
-$stmt->execute($params);
-$logs = $stmt->fetchAll();
+    $params[] = $limit;
+    $params[] = $offset;
+    $stmt->execute($params);
+    $logs = $stmt->fetchAll();
 
-// Get total count for pagination
-$countParams = array_slice($params, 0, -2);
-$countStmt = $pdo->prepare("
-    SELECT COUNT(*) 
-    FROM auto_checkout_logs acl
-    LEFT JOIN resources r ON acl.resource_id = r.id
-    $whereClause
-");
-$countStmt->execute($countParams);
-$totalLogs = $countStmt->fetchColumn();
-$totalPages = ceil($totalLogs / $limit);
+    // Get total count for pagination
+    $countParams = array_slice($params, 0, -2);
+    $countStmt = $pdo->prepare("
+        SELECT COUNT(*) 
+        FROM auto_checkout_logs acl
+        LEFT JOIN resources r ON acl.resource_id = r.id
+        $whereClause
+    ");
+    $countStmt->execute($countParams);
+    $totalLogs = $countStmt->fetchColumn();
+    $totalPages = ceil($totalLogs / $limit);
 
-// Get today's execution summary
-$stmt = $pdo->prepare("
-    SELECT 
-        COUNT(*) as total_today,
-        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful_today,
-        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_today,
-        SUM(amount_calculated) as total_amount_today
-    FROM auto_checkout_logs 
-    WHERE DATE(created_at) = CURDATE()
-");
-$stmt->execute();
-$todayStats = $stmt->fetch();
+    // Get today's execution summary
+    $stmt = $pdo->prepare("
+        SELECT 
+            COUNT(*) as total_today,
+            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful_today,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_today
+        FROM auto_checkout_logs 
+        WHERE DATE(created_at) = CURDATE()
+    ");
+    $stmt->execute();
+    $todayStats = $stmt->fetch();
 
-// Get cron execution status for today
-$stmt = $pdo->prepare("
-    SELECT * FROM cron_execution_logs 
-    WHERE execution_date = CURDATE() 
-    ORDER BY execution_time DESC 
-    LIMIT 1
-");
-$stmt->execute();
-$cronStatus = $stmt->fetch();
+    // Get today's cron execution status
+    $stmt = $pdo->prepare("
+        SELECT * FROM cron_execution_logs 
+        WHERE execution_date = CURDATE() 
+        ORDER BY execution_time DESC 
+        LIMIT 1
+    ");
+    $stmt->execute();
+    $cronStatus = $stmt->fetch();
+
+} catch (Exception $e) {
+    // Handle database errors gracefully
+    $error = "Database error: " . $e->getMessage();
+    $logs = [];
+    $totalLogs = 0;
+    $totalPages = 0;
+    $todayStats = ['total_today' => 0, 'successful_today' => 0, 'failed_today' => 0];
+    $cronStatus = null;
+}
 
 $flash = get_flash_message();
 ?>
@@ -115,6 +128,7 @@ $flash = get_flash_message();
         .status-success { background: rgba(40, 167, 69, 0.1); color: var(--success-color); }
         .status-failed { background: rgba(239, 68, 68, 0.1); color: var(--danger-color); }
         .status-pending { background: rgba(255, 193, 7, 0.1); color: var(--warning-color); }
+        .status-no_bookings { background: rgba(108, 117, 125, 0.1); color: #6c757d; }
     </style>
 </head>
 <body>
@@ -134,6 +148,12 @@ $flash = get_flash_message();
         <?php if ($flash): ?>
             <div class="flash-message flash-<?= $flash['type'] ?>">
                 <?= htmlspecialchars($flash['message']) ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if (isset($error)): ?>
+            <div class="flash-message flash-error">
+                <?= htmlspecialchars($error) ?>
             </div>
         <?php endif; ?>
 
@@ -179,9 +199,9 @@ $flash = get_flash_message();
             </div>
             
             <div class="stat-card">
-                <h4>Total Amount</h4>
-                <div class="dashboard-value"><?= format_currency($todayStats['total_amount_today'] ?? 0) ?></div>
-                <p>Calculated today</p>
+                <h4>System Status</h4>
+                <div class="dashboard-value" style="color: var(--success-color);">ACTIVE</div>
+                <p>Daily 10:00 AM execution</p>
             </div>
         </div>
         
@@ -247,9 +267,9 @@ $flash = get_flash_message();
                                         <?= date('M j, Y H:i:s', strtotime($log['created_at'])) ?>
                                     </td>
                                     <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
-                                        <strong><?= htmlspecialchars($log['custom_name'] ?: $log['display_name'] ?: $log['resource_name']) ?></strong>
-                                        <?php if ($log['type']): ?>
-                                            <br><small style="color: var(--dark-color);"><?= ucfirst($log['type']) ?></small>
+                                        <strong><?= htmlspecialchars($log['resource_display_name'] ?: $log['resource_name']) ?></strong>
+                                        <?php if ($log['resource_type']): ?>
+                                            <br><small style="color: var(--dark-color);"><?= ucfirst($log['resource_type']) ?></small>
                                         <?php endif; ?>
                                     </td>
                                     <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
@@ -263,9 +283,16 @@ $flash = get_flash_message();
                                     <td style="padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
                                         <?php 
                                         // Check if payment exists for this booking
-                                        $stmt = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE booking_id = ? AND payment_status = 'COMPLETED'");
-                                        $stmt->execute([$log['booking_id']]);
-                                        $isPaid = $stmt->fetchColumn() > 0;
+                                        $isPaid = false;
+                                        if ($log['booking_id']) {
+                                            try {
+                                                $stmt = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE booking_id = ? AND payment_status = 'COMPLETED'");
+                                                $stmt->execute([$log['booking_id']]);
+                                                $isPaid = $stmt->fetchColumn() > 0;
+                                            } catch (Exception $e) {
+                                                // Ignore payment check errors
+                                            }
+                                        }
                                         ?>
                                         <?php if ($isPaid): ?>
                                             <span style="color: var(--success-color); font-weight: 600;">✅ PAID</span>

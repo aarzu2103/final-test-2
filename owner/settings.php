@@ -19,41 +19,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $autoCheckoutEnabled = isset($_POST['auto_checkout_enabled']) ? '1' : '0';
                 
                 try {
-                    // Reset system for fresh start
-                    $stmt = $pdo->prepare("DELETE FROM system_settings WHERE setting_key LIKE '%auto_checkout%'");
-                    $stmt->execute();
-                    
-                    // Reset all booking flags
+                    // Update auto checkout settings
                     $stmt = $pdo->prepare("
-                        UPDATE bookings 
-                        SET auto_checkout_processed = 0,
-                            actual_checkout_date = NULL,
-                            actual_checkout_time = NULL,
-                            default_checkout_time = '10:00:00',
-                            is_auto_checkout_eligible = 1
-                        WHERE status IN ('BOOKED', 'PENDING')
+                        INSERT INTO system_settings (setting_key, setting_value) 
+                        VALUES ('auto_checkout_enabled', ?)
+                        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+                    ");
+                    $stmt->execute([$autoCheckoutEnabled]);
+                    
+                    // Ensure 10:00 AM time is set
+                    $stmt = $pdo->prepare("
+                        INSERT INTO system_settings (setting_key, setting_value) 
+                        VALUES ('auto_checkout_time', '10:00')
+                        ON DUPLICATE KEY UPDATE setting_value = '10:00'
                     ");
                     $stmt->execute();
                     
-                    // Insert fresh settings
-                    $settings = [
-                        'auto_checkout_enabled' => $autoCheckoutEnabled,
-                        'auto_checkout_time' => '10:00',
-                        'auto_checkout_timezone' => 'Asia/Kolkata',
-                        'auto_checkout_last_run_date' => '',
-                        'auto_checkout_last_run_time' => '',
-                        'auto_checkout_execution_window_start' => '10:00',
-                        'auto_checkout_execution_window_end' => '10:05',
-                        'auto_checkout_force_daily_execution' => '1',
-                        'auto_checkout_system_version' => '2.0'
-                    ];
-                    
-                    $stmt = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)");
-                    foreach ($settings as $key => $value) {
-                        $stmt->execute([$key, $value]);
-                    }
-                    
-                    redirect_with_message('settings.php', 'Auto checkout system reset and configured for daily 10:00 AM execution!', 'success');
+                    redirect_with_message('settings.php', 'Auto checkout settings updated! System will run daily at 10:00 AM.', 'success');
                 } catch (Exception $e) {
                     $error = 'Failed to update auto checkout settings: ' . $e->getMessage();
                 }
@@ -91,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->exec("DELETE FROM auto_checkout_logs WHERE DATE(created_at) = CURDATE()");
                     $pdo->exec("DELETE FROM cron_execution_logs WHERE execution_date = CURDATE()");
                     $pdo->exec("UPDATE bookings SET auto_checkout_processed = 0 WHERE status IN ('BOOKED', 'PENDING')");
-                    $pdo->exec("UPDATE system_settings SET setting_value = '' WHERE setting_key IN ('auto_checkout_last_run_date', 'auto_checkout_last_run_time')");
+                    $pdo->exec("UPDATE system_settings SET setting_value = '' WHERE setting_key = 'auto_checkout_last_run_date'");
                     
                     redirect_with_message('settings.php', 'System reset completed! Ready for fresh 10:00 AM execution tomorrow.', 'success');
                 } catch (Exception $e) {
@@ -102,31 +84,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Get current settings
-$stmt = $pdo->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE '%auto_checkout%'");
-$autoSettings = [];
-while ($row = $stmt->fetch()) {
-    $autoSettings[$row['setting_key']] = $row['setting_value'];
+// Get current settings with error handling
+try {
+    $stmt = $pdo->query("SELECT setting_key, setting_value FROM system_settings WHERE setting_key LIKE '%auto_checkout%'");
+    $autoSettings = [];
+    while ($row = $stmt->fetch()) {
+        $autoSettings[$row['setting_key']] = $row['setting_value'];
+    }
+} catch (Exception $e) {
+    $autoSettings = [];
+    $error = 'Could not read system settings: ' . $e->getMessage();
 }
 
 $autoEnabled = ($autoSettings['auto_checkout_enabled'] ?? '1') === '1';
 $autoTime = $autoSettings['auto_checkout_time'] ?? '10:00';
 $lastRunDate = $autoSettings['auto_checkout_last_run_date'] ?? '';
-$lastRunTime = $autoSettings['auto_checkout_last_run_time'] ?? '';
 
 // Get active bookings count
-$stmt = $pdo->query("SELECT COUNT(*) FROM bookings WHERE status IN ('BOOKED', 'PENDING') AND auto_checkout_processed = 0");
-$activeBookingsCount = $stmt->fetchColumn();
+try {
+    $stmt = $pdo->query("SELECT COUNT(*) FROM bookings WHERE status IN ('BOOKED', 'PENDING') AND (auto_checkout_processed IS NULL OR auto_checkout_processed = 0)");
+    $activeBookingsCount = $stmt->fetchColumn();
+} catch (Exception $e) {
+    $activeBookingsCount = 0;
+}
 
 // Get today's execution status
-$stmt = $pdo->prepare("
-    SELECT * FROM cron_execution_logs 
-    WHERE execution_date = CURDATE() 
-    ORDER BY execution_time DESC 
-    LIMIT 1
-");
-$stmt->execute();
-$todayExecution = $stmt->fetch();
+try {
+    $stmt = $pdo->prepare("
+        SELECT * FROM cron_execution_logs 
+        WHERE execution_date = CURDATE() 
+        ORDER BY execution_time DESC 
+        LIMIT 1
+    ");
+    $stmt->execute();
+    $todayExecution = $stmt->fetch();
+} catch (Exception $e) {
+    $todayExecution = null;
+}
 
 $flash = get_flash_message();
 ?>
@@ -154,10 +148,6 @@ $flash = get_flash_message();
         .status-inactive {
             background: linear-gradient(45deg, #dc3545, #c82333);
             color: white;
-        }
-        .status-warning {
-            background: linear-gradient(45deg, #ffc107, #e0a800);
-            color: black;
         }
         @keyframes pulse {
             0% { opacity: 1; }
@@ -217,7 +207,7 @@ $flash = get_flash_message();
             <p>Current Server Time: <?= date('H:i:s') ?></p>
             <p>Active Bookings Ready: <?= $activeBookingsCount ?></p>
             <?php if ($lastRunDate): ?>
-                <p>Last Execution: <?= $lastRunDate ?> at <?= $lastRunTime ?></p>
+                <p>Last Execution: <?= $lastRunDate ?></p>
             <?php endif; ?>
             <?php if ($todayExecution): ?>
                 <p>Today's Status: <?= strtoupper($todayExecution['execution_status']) ?> 
@@ -381,6 +371,7 @@ $flash = get_flash_message();
             <div style="background: rgba(255, 193, 7, 0.1); padding: 1.5rem; border-radius: 8px;">
                 <h4>If auto checkout is still not working:</h4>
                 <ol>
+                    <li><strong>Import SQL File:</strong> Run the complete_auto_checkout_rebuild.sql file in phpMyAdmin</li>
                     <li><strong>Check Cron Job:</strong> Verify it's active in Hostinger control panel</li>
                     <li><strong>Test Manually:</strong> Use the test buttons above</li>
                     <li><strong>Check Logs:</strong> View auto checkout logs for error messages</li>
